@@ -1,0 +1,16 @@
+# secrets — never commit; server has its own copy
+.env
+
+# local database and scrape data
+data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# editor/os noise
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

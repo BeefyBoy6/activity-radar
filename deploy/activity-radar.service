@@ -1,0 +1,15 @@
+[Unit]
+Description=Activity Radar — youth activity signup tracker
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/srv/activity-radar
+Environment=PATH=/srv/activity-radar/.venv/bin:/usr/bin:/bin
+ExecStart=/srv/activity-radar/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8033
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

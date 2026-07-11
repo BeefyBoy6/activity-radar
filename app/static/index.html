@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activity Radar — Youth Activity Tracker</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎯</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-icon">🎯</span>
+    <div>
+      <h1>Activity Radar</h1>
+      <p class="tagline">Youth activities near <span id="zip-label">55113</span> — never miss a registration window</p>
+    </div>
+  </div>
+  <div class="stats" id="stats">
+    <div class="stat"><span class="stat-num" id="stat-total">–</span><span class="stat-label">activities</span></div>
+    <div class="stat stat-open"><span class="stat-num" id="stat-open">–</span><span class="stat-label">open now</span></div>
+    <div class="stat stat-soon"><span class="stat-num" id="stat-soon">–</span><span class="stat-label">not yet open</span></div>
+    <div class="stat stat-new"><span class="stat-num" id="stat-new">–</span><span class="stat-label">new today</span></div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="activities">Activities</button>
+  <button class="tab" data-tab="upcoming">Upcoming opens</button>
+  <button class="tab" data-tab="sources">Sources &amp; logs</button>
+  <button class="tab" data-tab="settings">Settings</button>
+  <button class="btn btn-scrape" id="btn-scrape" title="Run all scrapers now">⟳ Scrape now</button>
+</nav>
+
+<!-- ======================= ACTIVITIES TAB ======================= -->
+<main id="tab-activities" class="tab-panel">
+  <div class="filters">
+    <input type="search" id="f-search" placeholder="Search activities…" class="f-search">
+    <select id="f-category"><option value="">All categories</option></select>
+    <select id="f-status">
+      <option value="">Any status</option>
+      <option value="open">Open</option>
+      <option value="not_yet_open">Not yet open</option>
+      <option value="waitlist">Waitlist</option>
+      <option value="closed">Closed</option>
+    </select>
+    <select id="f-org"><option value="">All organizations</option></select>
+    <input type="number" id="f-age" min="0" max="18" step="0.5" placeholder="Age" title="Child's age" class="f-age" value="8">
+    <label class="f-check"><input type="checkbox" id="f-free"> Free only</label>
+    <select id="f-sort">
+      <option value="reg_opens">Sort: registration opens</option>
+      <option value="start_date">Sort: start date</option>
+      <option value="price">Sort: price</option>
+      <option value="name">Sort: A–Z</option>
+      <option value="newest">Sort: newest</option>
+    </select>
+  </div>
+  <p class="result-count" id="result-count"></p>
+  <div class="cards" id="cards"></div>
+</main>
+
+<!-- ======================= UPCOMING TAB ======================= -->
+<main id="tab-upcoming" class="tab-panel" hidden>
+  <p class="section-intro">Registration windows opening soon — sorted by open date. These are the ones you can't miss.</p>
+  <div id="upcoming-list"></div>
+</main>
+
+<!-- ======================= SOURCES TAB ======================= -->
+<main id="tab-sources" class="tab-panel" hidden>
+  <p class="section-intro">All monitored sources. Toggle any off to skip it during scrapes.</p>
+  <div class="table-wrap">
+    <table class="src-table">
+      <thead><tr>
+        <th>On</th><th>Source</th><th>Platform</th><th>Activities</th>
+        <th>Last scrape</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody id="src-rows"></tbody>
+    </table>
+  </div>
+  <h2 class="sub-h">Recent scrape log</h2>
+  <div class="table-wrap">
+    <table class="log-table">
+      <thead><tr>
+        <th>When</th><th>Source</th><th>Status</th><th>Found</th><th>New</th><th>Changed</th><th>Error</th>
+      </tr></thead>
+      <tbody id="log-rows"></tbody>
+    </table>
+  </div>
+</main>
+
+<!-- ======================= SETTINGS TAB ======================= -->
+<main id="tab-settings" class="tab-panel" hidden>
+  <div class="settings-grid">
+    <section class="panel">
+      <h2>Location</h2>
+      <label>Zip code <input id="s-zip" type="text" maxlength="5"></label>
+      <label>Radius (minutes drive) <input id="s-radius" type="number" min="5" max="60"></label>
+    </section>
+    <section class="panel">
+      <h2>Notifications</h2>
+      <label class="f-check"><input type="checkbox" id="s-notify-new"> New activity alerts</label>
+      <label class="f-check"><input type="checkbox" id="s-notify-opened"> Registration-opened alerts</label>
+      <label class="f-check"><input type="checkbox" id="s-notify-soon"> Opening-within-48h alerts</label>
+      <label class="f-check"><input type="checkbox" id="s-digest"> Daily email digest</label>
+      <p class="hint">Email/ntfy delivery is configured in <code>.env</code> (see <code>.env.example</code>).</p>
+    </section>
+    <section class="panel">
+      <h2>Muted categories</h2>
+      <div id="s-mute-cats" class="mute-list"></div>
+    </section>
+    <section class="panel">
+      <h2>Muted organizations</h2>
+      <div id="s-mute-orgs" class="mute-list"></div>
+    </section>
+  </div>
+  <button class="btn btn-primary" id="s-save">Save settings</button>
+  <span id="s-saved" class="saved-note" hidden>Saved ✓</span>
+</main>
+
+<!-- ======================= DETAIL MODAL ======================= -->
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <button class="modal-close" id="modal-close" aria-label="Close">✕</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
