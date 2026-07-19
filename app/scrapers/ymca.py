@@ -1,74 +1,87 @@
-"""YMCA of the North location pages (ymcanorth.org) — server-rendered Drupal.
-
-Scrapes the location page plus its linked program pages (swim lessons,
-youth sports, camps) one level deep.
-"""
+"""YMCA of the North location and program pages."""
 from __future__ import annotations
 
 import re
 from urllib.parse import urljoin
 
 from .base import BaseScraper, register, log
-from ..services.normalizer import stable_external_id
+from ..services.normalizer import (
+    clean_text,
+    extract_age_text,
+    extract_price_text,
+    stable_external_id,
+)
 
-PROGRAM_HINTS = ("swim", "sport", "camp", "youth", "child", "kid", "aquatic",
-                 "enrichment", "school_age", "school-age")
+PROGRAM_HINTS = (
+    "swim", "sport", "camp", "youth", "child", "kid", "aquatic",
+    "enrichment", "school_age", "school-age",
+)
+MEANINGFUL_HEADING = re.compile(
+    r"\b(swim|sport|camp|youth|child|kid|teen|lesson|class|league|clinic|club|program)\b",
+    re.I,
+)
+SKIP_HEADING = re.compile(
+    r"^(about|overview|benefits|locations?|hours?|contact|amenities|membership|"
+    r"financial assistance|frequently asked questions|related links)$",
+    re.I,
+)
 
 
 @register("ymca")
 class YMCAScraper(BaseScraper):
-
     def scrape(self, source) -> list[dict]:
         url = source.catalog_url or source.homepage_url
         soup = self.fetch_html(url)
         root = "https://www.ymcanorth.org"
 
         program_links = set()
-        for a in soup.select("a[href]"):
-            href = a.get("href", "")
-            if any(h in href.lower() for h in PROGRAM_HINTS) and href.count("/") >= 2:
+        for anchor in soup.select("a[href]"):
+            href = anchor.get("href", "")
+            label = clean_text(anchor.get_text(" ", strip=True), 160).lower()
+            if any(hint in f"{href.lower()} {label}" for hint in PROGRAM_HINTS) and href.count("/") >= 2:
                 program_links.add(urljoin(root, href))
 
-        out = []
+        output: list[dict] = []
         seen_ids: set[str] = set()
-        for link in sorted(program_links)[:15]:
+        for link in sorted(program_links)[:20]:
             try:
-                out.extend(self._parse_program_page(source, link, seen_ids))
-            except Exception as e:
-                log.warning("ymca page failed %s: %s", link, e)
-        return out
+                output.extend(self._parse_program_page(source, link, seen_ids))
+            except Exception as exc:
+                log.warning("ymca page failed %s: %s", link, exc)
+        return output
 
     def _parse_program_page(self, source, url: str, seen_ids: set[str]) -> list[dict]:
         soup = self.fetch_html(url)
-        out = []
-        # program blocks are usually h2/h3 sections with description text
+        output = []
         for header in soup.select("main h2, main h3, article h2, article h3"):
-            name = header.get_text(" ", strip=True)
-            if not (3 < len(name) < 120):
+            name = clean_text(header.get_text(" ", strip=True), 200)
+            if not (3 < len(name) < 160) or SKIP_HEADING.fullmatch(name):
                 continue
-            desc_parts = []
-            for sib in header.find_next_siblings(limit=3):
-                if sib.name and sib.name.startswith("h"):
+
+            description_parts: list[str] = []
+            for sibling in header.find_next_siblings(limit=5):
+                if sibling.name and sibling.name.startswith("h"):
                     break
-                desc_parts.append(sib.get_text(" ", strip=True))
-            desc = " ".join(p for p in desc_parts if p)[:400]
-            ext_id = stable_external_id(source.slug, url, name)
-            if ext_id in seen_ids:
+                text = clean_text(sibling.get_text(" ", strip=True), 600)
+                if text:
+                    description_parts.append(text)
+            description = clean_text(" ".join(description_parts), 1200)
+            combined = f"{name} {description}"
+            age_text = extract_age_text(combined)
+            if not MEANINGFUL_HEADING.search(combined) and not age_text:
                 continue
-            seen_ids.add(ext_id)
-            text = f"{name} {desc}"
-            out.append({
-                "external_id": ext_id,
+
+            external_id = stable_external_id(source.slug, url, name)
+            if external_id in seen_ids:
+                continue
+            seen_ids.add(external_id)
+            output.append({
+                "external_id": external_id,
                 "name": name,
-                "description": desc,
-                "age_text": _search(r"(?:ages?|grades?)\s*[:\s]*([\w\s.+-]{1,25})", text),
-                "price_text": _search(r"(\$[\d,.]+)", text),
-                "status_text": text,
+                "description": description,
+                "age_text": age_text,
+                "price_text": extract_price_text(combined),
+                "status_text": combined,
                 "signup_url": url,
             })
-        return out
-
-
-def _search(pattern: str, text: str) -> str:
-    m = re.search(pattern, text, re.I)
-    return m.group(1).strip() if m else ""
+        return output

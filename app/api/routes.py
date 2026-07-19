@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_db
 from ..config import CATEGORIES
-from ..models import Activity, ActivityEvent, ScrapeLog, Source
+from ..models import Activity, ActivityEvent, ScrapeLog, Source, utcnow
 from ..services import runner, settings_store
 
 router = APIRouter(prefix="/api")
@@ -58,7 +58,7 @@ def list_activities(
     q: str | None = None,
     include_stale: bool = False,
     sort: str = Query("reg_opens", pattern="^(reg_opens|start_date|price|name|newest)$"),
-    limit: int = Query(500, le=2000),
+    limit: int = Query(500, ge=1, le=2000),
 ):
     query = (db.query(Activity).options(joinedload(Activity.source))
              .filter(Activity.excluded.is_(False)))
@@ -93,7 +93,7 @@ def list_activities(
     else:
         query = query.order_by(func.lower(Activity.name))
 
-    new_cutoff = datetime.utcnow() - timedelta(hours=24)
+    new_cutoff = utcnow() - timedelta(hours=24)
     return [_activity_dict(a, new_cutoff) for a in query.limit(limit).all()]
 
 
@@ -102,7 +102,7 @@ def get_activity(activity_id: int, db: Session = Depends(get_db)):
     a = db.get(Activity, activity_id)
     if not a:
         raise HTTPException(404)
-    d = _activity_dict(a, datetime.utcnow() - timedelta(hours=24))
+    d = _activity_dict(a, utcnow() - timedelta(hours=24))
     d["events"] = [
         {"type": e.event_type, "old": e.old_value, "new": e.new_value,
          "at": e.created_at.isoformat()}
@@ -114,7 +114,7 @@ def get_activity(activity_id: int, db: Session = Depends(get_db)):
 @router.get("/meta")
 def meta(db: Session = Depends(get_db)):
     """Categories, orgs, and counts for filter UI + header stats."""
-    new_cutoff = datetime.utcnow() - timedelta(hours=24)
+    new_cutoff = utcnow() - timedelta(hours=24)
     active = db.query(Activity).filter(Activity.stale.is_(False),
                                        Activity.excluded.is_(False))
     return {
@@ -168,12 +168,14 @@ def update_source(source_id: int, payload: dict, db: Session = Depends(get_db)):
 
 @router.post("/scrape")
 def scrape_now(background: BackgroundTasks, source_id: int | None = None):
+    if runner.is_running():
+        return {"started": False, "busy": True, "source_id": source_id}
     background.add_task(runner.run_all, source_id)
-    return {"started": True, "source_id": source_id}
+    return {"started": True, "busy": False, "source_id": source_id}
 
 
 @router.get("/logs")
-def logs(db: Session = Depends(get_db), limit: int = 100):
+def logs(db: Session = Depends(get_db), limit: int = Query(100, ge=1, le=500)):
     rows = (db.query(ScrapeLog).options(joinedload(ScrapeLog.source))
             .order_by(ScrapeLog.started_at.desc()).limit(limit).all())
     return [{
@@ -185,6 +187,9 @@ def logs(db: Session = Depends(get_db), limit: int = 100):
         "found": r.activities_found,
         "new": r.new_count,
         "changed": r.changed_count,
+        "rejected": r.rejected_count,
+        "rejection_summary": r.rejection_summary,
+        "staling_skipped": r.staling_skipped,
         "error": r.error,
     } for r in rows]
 

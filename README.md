@@ -54,7 +54,7 @@ the dashboard's Settings tab.
 sources (33, grouped by platform)
    │   daily 6am cron (APScheduler) or "Scrape now" button
    ▼
-platform scrapers ──► normalizer ──► differ (upsert + change events)
+platform scrapers ──► normalizer ──► quality gate ──► differ (upsert + change events)
  rec1 / dash / eleyo / arux /            │
  revtrak / vscloud / ymca / custom       ├─► enricher (detail pages: full
                                          │    description, exact price/age/
@@ -86,6 +86,34 @@ platform scrapers ──► normalizer ──► differ (upsert + change events)
 - Activities that disappear from a scrape are marked **stale**, not deleted,
   so history survives.
 - A `registration_status` never downgrades to `unknown` once known.
+
+
+## Data-quality safeguards
+
+Every scraped candidate now passes a central quality gate before it can enter
+the database or trigger a notification. The gate rejects generic page headings,
+navigation, rentals, birthday-party packages, passes/memberships, services, and
+clearly adult/senior offerings. It requires concrete evidence such as a youth
+audience, activity-specific URL, age range, date/schedule, price, or registration
+state. Custom/YMCA pages use a stricter threshold than structured registration
+platforms.
+
+Scrape logs show **accepted** and **rejected** counts plus the leading rejection
+reasons. If a parser suddenly returns mostly noise or far fewer records than the
+previous successful run, stale marking is skipped for safety instead of hiding
+the whole catalog.
+
+To audit records that were stored before the quality gate was added:
+
+```powershell
+# dry run; review data/quality-audit.csv
+python -m scripts.quality_audit --csv data/quality-audit.csv
+
+# after reviewing the CSV, hide rejected rows without deleting history
+python -m scripts.quality_audit --apply --csv data/quality-audit.csv
+```
+
+The audit marks rows `stale=1`; it never deletes activities or events.
 
 ## Scraper reality check (read this once)
 
@@ -137,3 +165,13 @@ app/
   static/              dashboard (vanilla JS SPA)
 seed/seed.py           33 sources + starter activities
 ```
+
+## Tests
+
+```powershell
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+The suite covers age/status normalization, URL safety, the activity-quality
+gate, Eleyo/ARUX card isolation, audience exclusion, and database insertion.

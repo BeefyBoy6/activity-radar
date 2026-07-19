@@ -1,5 +1,5 @@
 """ORM models."""
-from datetime import datetime, date
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint,
@@ -10,7 +10,8 @@ from .database import Base
 
 
 def utcnow() -> datetime:
-    return datetime.utcnow()
+    """Naive UTC timestamp for SQLite, without deprecated datetime.utcnow()."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Source(Base):
@@ -105,6 +106,9 @@ class ScrapeLog(Base):
     new_count: Mapped[int] = mapped_column(Integer, default=0)
     changed_count: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejection_summary: Mapped[str] = mapped_column(Text, default="")
+    staling_skipped: Mapped[bool] = mapped_column(Boolean, default=False)
 
     source: Mapped["Source"] = relationship(back_populates="logs")
 

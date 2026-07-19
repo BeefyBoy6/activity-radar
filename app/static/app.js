@@ -141,6 +141,7 @@ const EVENT_LABEL = {
   status_change: "Status changed",
   reg_opened: "Registration opened",
   reg_opening_soon: "Flagged: opening within 48h",
+  details_changed: "Details changed",
 };
 
 async function openDetail(id) {
@@ -236,10 +237,10 @@ async function loadSources() {
       <td>${new Date(l.started_at).toLocaleString()}</td>
       <td>${esc(l.source)}</td>
       <td><span class="${l.status}-pill">${l.status}</span></td>
-      <td>${l.found}</td><td>${l.new}</td><td>${l.changed}</td>
-      <td class="err" title="${esc(l.error)}">${esc((l.error || "").split("\n")[0])}</td>
+      <td>${l.found}</td><td>${l.rejected || 0}</td><td>${l.new}</td><td>${l.changed}</td>
+      <td class="err" title="${esc([l.error, l.rejection_summary].filter(Boolean).join("\n"))}">${esc((l.error || l.rejection_summary || (l.staling_skipped ? "Stale update skipped for safety" : "")).split("\n")[0])}</td>
     </tr>`).join("")
-    : `<tr><td colspan="7" class="empty">No scrapes yet — hit “Scrape now”.</td></tr>`;
+    : `<tr><td colspan="8" class="empty">No scrapes yet — hit “Scrape now”.</td></tr>`;
 }
 
 /* ---------------- settings tab ---------------- */
@@ -305,7 +306,9 @@ document.addEventListener("click", (ev) => {
   const scrapeBtn = ev.target.closest(".src-scrape");
   if (scrapeBtn) {
     api(`/api/scrape?source_id=${scrapeBtn.dataset.id}`, { method: "POST" })
-      .then(() => toast("Scrape started — check logs in a minute"));
+      .then((result) => toast(result.started
+        ? "Scrape started — check logs in a minute"
+        : "A scrape is already running"));
   }
 });
 
@@ -336,7 +339,9 @@ let searchTimer;
 
 $("#btn-scrape").addEventListener("click", () => {
   api("/api/scrape", { method: "POST" })
-    .then(() => toast("Full scrape started — sources appear in logs as they finish"));
+    .then((result) => toast(result.started
+      ? "Full scrape started — sources appear in logs as they finish"
+      : "A scrape is already running"));
 });
 $("#s-save").addEventListener("click", saveSettings);
 

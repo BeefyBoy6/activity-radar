@@ -1,5 +1,5 @@
 """SQLAlchemy engine/session setup (SQLite)."""
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import DB_PATH
@@ -8,8 +8,18 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(
     f"sqlite:///{DB_PATH}",
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30},
 )
+
+
+@event.listens_for(engine, "connect")
+def _sqlite_pragmas(dbapi_connection, _connection_record):
+    """Improve reliability when the scheduler and dashboard overlap."""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
@@ -33,6 +43,11 @@ def ensure_schema():
     Base.metadata.create_all(engine)
     added = {
         "activities": {"enriched_at": "DATETIME", "excluded": "BOOLEAN DEFAULT 0"},
+        "scrape_logs": {
+            "rejected_count": "INTEGER DEFAULT 0",
+            "rejection_summary": "TEXT DEFAULT ''",
+            "staling_skipped": "BOOLEAN DEFAULT 0",
+        },
     }
     with engine.begin() as conn:
         for table, cols in added.items():

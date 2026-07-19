@@ -190,10 +190,14 @@ th { text-align: left; color: var(--ink-3); font-size: 11.5px; text-transform: u
 th, td { padding: 9px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 tr:last-child td { border-bottom: none; }
 td.err { color: #c4574d; max-width: 380px; overflow: hidden; text-overflow: ellipsis; }
-.ok-pill, .error-pill, .running-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.ok-pill, .warning-pill, .error-pill, .running-pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
 .ok-pill { background: var(--st-open-bg); color: var(--st-open-ink); }
+.warning-pill { background: #fff1c7; color: #855d00; }
 .error-pill { background: #fbe4e1; color: #a1352c; }
-@media (prefers-color-scheme: dark) { .error-pill { background: #3a1d1a; color: #ef8a80; } }
+@media (prefers-color-scheme: dark) {
+  .error-pill { background: #3a1d1a; color: #ef8a80; }
+  .warning-pill { background: #3a3217; color: #f0cf65; }
+}
 .running-pill { background: var(--st-soon-bg); color: var(--st-soon-ink); }
 .switch { accent-color: var(--accent); width: 18px; height: 18px; cursor: pointer; }
 .btn-sm { padding: 4px 10px; font-size: 12.5px; }

@@ -1,10 +1,8 @@
-"""Post-scrape enrichment: visit each activity's detail page and upgrade the
-record with the full description, precise price/age/date/schedule/location,
-and a refined registration status.
+"""Detail-page enrichment and audience verification.
 
-Listing cards only carry truncated context text; the detail page is the
-source of truth. Runs after each scrape for activities not yet enriched
-(or re-flagged by the differ), throttled to be polite.
+Listing cards are useful for discovery but are not trusted as the final source
+of truth.  This module visits activity-specific pages, upgrades fields, and
+permanently hides clearly adult/senior offerings before notifications run.
 """
 from __future__ import annotations
 
@@ -18,34 +16,33 @@ from sqlalchemy.orm import Session
 
 from ..config import REQUEST_TIMEOUT, USER_AGENT
 from ..models import Activity, ActivityEvent, Source, utcnow
-from .normalizer import parse_age_range, parse_date, parse_price
+from .normalizer import (
+    clean_activity_title,
+    extract_age_text,
+    extract_price_text,
+    parse_age_range,
+    parse_date,
+    parse_price,
+    parse_status,
+)
 
 log = logging.getLogger("enricher")
 
-BATCH_LIMIT = 320      # max detail pages per source per run
-DELAY_S = 0.15         # politeness delay between fetches
+BATCH_LIMIT = 320
+DELAY_S = 0.15
 
 _ORDINAL = re.compile(r"(\d)(st|nd|rd|th)\b", re.I)
+_ADULT_AUDIENCE = re.compile(
+    r"\b(?:adult enrichment|adult education|adults? only|senior(?:s)?|"
+    r"older adults?|55\+|60\+|65\+|21\+|18\+|driver'?s? education)\b",
+    re.I,
+)
+_YOUTH_AUDIENCE = re.compile(
+    r"\b(?:youth enrichment|youth|children|child|kids?|junior|teen|family|"
+    r"preschool|pre[- ]?k|kindergarten|grades?\s*(?:k|\d)|ages?\s*\d)\b",
+    re.I,
+)
 
-
-def _fetch(url: str) -> BeautifulSoup:
-    resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={"User-Agent": USER_AGENT})
-    resp.raise_for_status()
-    return BeautifulSoup(resp.text, "lxml")
-
-
-def _clean(text: str) -> str:
-    return _ORDINAL.sub(r"\1", text)
-
-
-# --------------------------------------------------------------------------
-# platform detail parsers — each returns a partial dict of Activity fields
-# --------------------------------------------------------------------------
-
-# breadcrumb program areas that mean the course is not for kids
-ADULT_CRUMB = re.compile(r"^(adult|senior|driver|community education for adults|55\+|21\+)", re.I)
-
-# youth-enrichment subcategory -> app category
 CRUMB_CATEGORY = [
     (re.compile(r"science|tech|academic|stem|math", re.I), "stem / education"),
     (re.compile(r"creative|art|music|theat|dance", re.I), "creative arts"),
@@ -54,105 +51,205 @@ CRUMB_CATEGORY = [
 ]
 
 
+def _fetch(url: str) -> BeautifulSoup:
+    response = requests.get(
+        url,
+        timeout=REQUEST_TIMEOUT,
+        headers={"User-Agent": USER_AGENT},
+    )
+    response.raise_for_status()
+    return BeautifulSoup(response.text, "lxml")
+
+
+def _clean(text: str) -> str:
+    return _ORDINAL.sub(r"\1", text)
+
+
+def _breadcrumb_text(soup: BeautifulSoup, main) -> str:
+    selectors = (
+        "nav[aria-label*='breadcrumb' i]",
+        ".breadcrumb",
+        "[class*='breadcrumb']",
+        "[data-testid*='breadcrumb']",
+    )
+    pieces: list[str] = []
+    for selector in selectors:
+        for node in soup.select(selector):
+            text = node.get_text(" / ", strip=True)
+            if text and text not in pieces:
+                pieces.append(text)
+    if pieces:
+        return " / ".join(pieces)[:500]
+
+    # ARUX/Eleyo sometimes render the category as a short line directly after
+    # the h1 without a breadcrumb class.
+    h1 = main.select_one("h1") if main else None
+    if h1:
+        for sibling in h1.find_all_next(limit=5):
+            text = sibling.get_text(" ", strip=True)
+            if 3 < len(text) < 140 and "/" in text:
+                return text
+    return ""
+
+
+def _audience_exclusion(title: str, breadcrumb: str, intro: str) -> tuple[bool, str]:
+    strongest = f"{breadcrumb} {title}".strip()
+    if _ADULT_AUDIENCE.search(strongest) and not _YOUTH_AUDIENCE.search(strongest):
+        return True, breadcrumb or title
+
+    # Only use body text when it states a clear adult audience near the top;
+    # long pages may mention adult supervision inside a youth program.
+    intro = intro[:700]
+    if _ADULT_AUDIENCE.search(intro) and not _YOUTH_AUDIENCE.search(intro):
+        return True, "adult-only page introduction"
+    return False, ""
+
+
 def parse_eleyo_arux_detail(url: str) -> dict:
-    """Eleyo/ARUX /course/<id> pages: description paragraphs up top, then an
-    Options block with Starts/times/location/Price/Grades and an Enroll link.
-    The breadcrumb line under the title ("Youth Enrichment / Science &
-    Technology") is the authority on audience and category."""
+    """Parse an Eleyo/ARUX course page and verify its audience."""
     soup = _fetch(url)
-    main = soup.select_one("main") or soup.body
+    main = soup.select_one("main") or soup.body or soup
     out: dict = {}
 
-    # breadcrumb: first line after the h1 in the rendered text
-    head_text = main.get_text("\n", strip=True)[:400]
-    crumb_m = re.search(
-        r"\n((?:[A-Z][\w'&,. -]{2,40})(?:\s*/\s*[A-Z][\w'&,. -]{2,40})?)\n", head_text)
-    if crumb_m:
-        crumb = crumb_m.group(1).strip()
-        if ADULT_CRUMB.search(crumb):
-            return {"excluded": True, "crumb": crumb}
-        for pat, cat in CRUMB_CATEGORY:
-            if pat.search(crumb):
-                out["category"] = cat
-                break
-
-    # the detail page h1 is the canonical course name
     h1 = main.select_one("h1")
-    if h1:
-        title = h1.get_text(" ", strip=True)
-        if 3 < len(title) < 200:
-            out["name"] = title
+    raw_title = h1.get_text(" ", strip=True) if h1 else ""
+    breadcrumb = _breadcrumb_text(soup, main)
+    intro = main.get_text(" ", strip=True)[:1200]
+    excluded, reason = _audience_exclusion(raw_title, breadcrumb, intro)
+    if excluded:
+        return {"excluded": True, "crumb": reason}
 
-    # description: substantial paragraphs before the section/options block
-    paras = []
-    for p in main.select("p"):
-        t = p.get_text(" ", strip=True)
-        if len(t) > 60 and not re.match(r"(late registration|to ensure)", t, re.I):
-            paras.append(t)
-        if sum(len(x) for x in paras) > 900:
+    for pattern, category in CRUMB_CATEGORY:
+        if pattern.search(breadcrumb):
+            out["category"] = category
             break
-    if paras:
-        out["description"] = " ".join(paras)[:1200]
+
+    paragraphs: list[str] = []
+    for paragraph in main.select("p"):
+        text = paragraph.get_text(" ", strip=True)
+        if len(text) > 60 and not re.match(r"(?:late registration|to ensure)", text, re.I):
+            paragraphs.append(text)
+        if sum(len(value) for value in paragraphs) > 900:
+            break
+    if paragraphs:
+        out["description"] = " ".join(paragraphs)[:1200]
+
+    title = clean_activity_title(raw_title, out.get("description", ""), 180)
+    if 3 < len(title) <= 180:
+        out["name"] = title
 
     text = _clean(main.get_text("\n", strip=True))
 
-    m = re.search(r"Price:\s*\$([\d,]+(?:\.\d{1,2})?)", text)
-    if m:
-        out["price"] = float(m.group(1).replace(",", ""))
-        out["price_text"] = f"${m.group(1)}"
-        out["is_free"] = out["price"] == 0
+    price_text = extract_price_text(text)
+    if price_text:
+        price, is_free, _resident = parse_price(price_text)
+        out["price_text"] = price_text
+        out["price"] = price
+        out["is_free"] = is_free
 
-    m = re.search(r"(Grades?\s+(?:K|\d{1,2})\s*(?:-|–|to)\s*(?:K|\d{1,2}))", text, re.I)
-    if not m:
-        m = re.search(r"(Ages?\s+\d{1,2}\s*(?:-|–|to)\s*\d{1,2})", text, re.I)
-    if m:
-        out["age_text"] = m.group(1)
-        lo, hi = parse_age_range(m.group(1))
-        if lo is not None or hi is not None:
-            out["age_min"], out["age_max"] = lo, hi
+    age_text = extract_age_text(text)
+    if age_text:
+        out["age_text"] = age_text
+        low, high = parse_age_range(age_text)
+        if low is not None or high is not None:
+            out["age_min"], out["age_max"] = low, high
 
-    m = re.search(r"Starts?\s+\w{3},?\s+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s*\d{4})", text)
-    if m:
-        d = parse_date(m.group(1))
-        if d:
-            out["start_date"] = d
+    start_match = re.search(
+        r"Starts?\s+\w{3},?\s+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s*\d{4})",
+        text,
+        re.I,
+    )
+    if start_match:
+        parsed = parse_date(start_match.group(1))
+        if parsed:
+            out["start_date"] = parsed
 
-    m = re.search(r"(\d{1,2}:\d{2}\s*(?:-|–)\s*\d{1,2}:\d{2}\s*[AP]M)", text)
-    if m:
-        out["schedule_text"] = m.group(1)
+    end_match = re.search(
+        r"Ends?\s+\w{3},?\s+([A-Za-z]{3,9}\.?\s+\d{1,2},?\s*\d{4})",
+        text,
+        re.I,
+    )
+    if end_match:
+        parsed = parse_date(end_match.group(1))
+        if parsed:
+            out["end_date"] = parsed
 
-    m = re.search(r"\n([^\n]{6,90},\s*MN\s*\d{5})", text)
-    if m:
-        out["location"] = m.group(1).strip()
+    schedule_match = re.search(
+        r"(\d{1,2}:\d{2}\s*(?:-|–|—)\s*\d{1,2}:\d{2}\s*[AP]M)",
+        text,
+        re.I,
+    )
+    if schedule_match:
+        out["schedule_text"] = schedule_match.group(1)
 
-    # status: an add-to-cart link means it's genuinely enrollable
+    location_match = re.search(r"\n([^\n]{6,90},\s*MN\s*\d{5})", text)
+    if location_match:
+        out["location"] = location_match.group(1).strip()
+
     body_text = text.lower()
-    if soup.select_one("a[href*='/cart/add/']"):
+    if soup.select_one("a[href*='/cart/add/'], button[data-action*='cart']"):
         out["registration_status"] = "open"
-    elif "waitlist" in body_text:
-        out["registration_status"] = "waitlist"
-    elif re.search(r"registration (?:is )?closed|no longer available", body_text):
-        out["registration_status"] = "closed"
+    else:
+        status = parse_status(body_text)
+        if status != "unknown":
+            out["registration_status"] = status
+
+    opens_match = re.search(
+        r"registration\s+opens?\s+(?:on\s+)?([A-Za-z]{3,9}\.?\s+\d{1,2}(?:,?\s*\d{4})?)",
+        text,
+        re.I,
+    )
+    if opens_match:
+        parsed = parse_date(opens_match.group(1))
+        if parsed:
+            from datetime import datetime
+            out["registration_opens_at"] = datetime(parsed.year, parsed.month, parsed.day)
+            if out.get("registration_status") == "unknown":
+                out["registration_status"] = "not_yet_open"
     return out
 
 
 def parse_generic_detail(url: str) -> dict:
-    """Any other site: og:description meta, else the page's substantial
-    paragraphs. Conservative — only returns a description."""
+    """Conservatively enrich a non-platform detail page."""
     soup = _fetch(url)
+    main = soup.select_one("main, article") or soup.body or soup
     out: dict = {}
 
+    h1 = main.select_one("h1")
+    raw_title = h1.get_text(" ", strip=True) if h1 else ""
+    breadcrumb = _breadcrumb_text(soup, main)
+    intro = main.get_text(" ", strip=True)[:1200]
+    excluded, reason = _audience_exclusion(raw_title, breadcrumb, intro)
+    if excluded:
+        return {"excluded": True, "crumb": reason}
+
     meta = soup.select_one("meta[property='og:description'], meta[name='description']")
-    desc = (meta.get("content", "").strip() if meta else "")
-    if len(desc) < 80:
-        main = soup.select_one("main, article") or soup.body
-        paras = [p.get_text(" ", strip=True) for p in main.select("p")]
-        paras = [t for t in paras if len(t) > 80][:3]
-        joined = " ".join(paras)
-        if len(joined) > len(desc):
-            desc = joined
-    if len(desc) > 60:
-        out["description"] = desc[:1200]
+    description = meta.get("content", "").strip() if meta else ""
+    if len(description) < 80:
+        paragraphs = [p.get_text(" ", strip=True) for p in main.select("p")]
+        paragraphs = [text for text in paragraphs if len(text) > 80][:3]
+        joined = " ".join(paragraphs)
+        if len(joined) > len(description):
+            description = joined
+    if len(description) > 60:
+        out["description"] = description[:1200]
+
+    title = clean_activity_title(raw_title, out.get("description", ""), 180)
+    if 3 < len(title) <= 180:
+        out["name"] = title
+
+    page_text = main.get_text(" ", strip=True)[:5000]
+    age_text = extract_age_text(page_text)
+    if age_text:
+        out["age_text"] = age_text
+        out["age_min"], out["age_max"] = parse_age_range(age_text)
+    price_text = extract_price_text(page_text)
+    if price_text:
+        price, is_free, _resident = parse_price(price_text)
+        out.update(price_text=price_text, price=price, is_free=is_free)
+    status = parse_status(page_text)
+    if status != "unknown":
+        out["registration_status"] = status
     return out
 
 
@@ -161,71 +258,108 @@ DETAIL_PARSERS = {
     "arux": parse_eleyo_arux_detail,
 }
 
-# fields the detail page is allowed to overwrite
-_FIELDS = ("name", "description", "category", "price", "price_text", "is_free",
-           "age_text", "age_min", "age_max", "start_date", "schedule_text", "location")
+_FIELDS = (
+    "name", "description", "category", "price", "price_text", "is_free",
+    "age_text", "age_min", "age_max", "start_date", "end_date",
+    "schedule_text", "location", "registration_opens_at",
+)
 
 
 def enrich_source(db: Session, source: Source) -> int:
-    """Enrich un-enriched, non-stale activities of one source. Returns count."""
+    """Enrich unenriched, visible activities from one source."""
     parser = DETAIL_PARSERS.get(source.platform, parse_generic_detail)
-    acts = (db.query(Activity)
-            .filter(Activity.source_id == source.id,
-                    Activity.stale.is_(False),
-                    Activity.enriched_at.is_(None),
-                    Activity.signup_url != "")
-            .limit(BATCH_LIMIT)
-            .all())
-    if not acts:
+    activities = (
+        db.query(Activity)
+        .filter(
+            Activity.source_id == source.id,
+            Activity.stale.is_(False),
+            Activity.excluded.is_(False),
+            Activity.enriched_at.is_(None),
+            Activity.signup_url != "",
+        )
+        .order_by(Activity.first_seen_at, Activity.id)
+        .limit(BATCH_LIMIT)
+        .all()
+    )
+    if not activities:
         return 0
 
+    generic_urls = {
+        (source.catalog_url or "").rstrip("/"),
+        (source.homepage_url or "").rstrip("/"),
+    }
     done = 0
-    for act in acts:
-        try:
-            data = parser(act.signup_url)
-        except requests.HTTPError as e:
-            code = e.response.status_code if e.response is not None else 0
-            if code in (404, 410):
-                # dead link — clear it so the UI falls back to the org catalog
-                log.warning("dead signup link (%s) cleared: %s", code, act.signup_url)
-                act.signup_url = ""
-            act.enriched_at = utcnow()
+    for activity in activities:
+        # A catalog/homepage is not an activity detail page.  Fetching it once
+        # per candidate only imports generic metadata and wastes requests.
+        if activity.signup_url.rstrip("/") in generic_urls:
+            activity.enriched_at = utcnow()
             continue
-        except Exception as e:
-            log.warning("enrich failed %s: %s", act.signup_url, e)
-            act.enriched_at = utcnow()  # don't retry a broken page every run
+
+        try:
+            data = parser(activity.signup_url)
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else 0
+            if code in (404, 410):
+                log.warning("dead signup link (%s) cleared: %s", code, activity.signup_url)
+                activity.signup_url = ""
+                activity.enriched_at = utcnow()
+            elif code in (400, 401, 403):
+                # Retrying an intentionally blocked page every morning provides
+                # no value; the listing-card data remains available.
+                log.warning("detail page unavailable (%s): %s", code, activity.signup_url)
+                activity.enriched_at = utcnow()
+            else:
+                # 429/5xx are transient. Leave enriched_at empty for a later run.
+                log.warning("transient enrich HTTP error (%s): %s", code, activity.signup_url)
+            continue
+        except requests.RequestException as exc:
+            log.warning("transient enrich request failure %s: %s", activity.signup_url, exc)
+            continue
+        except Exception as exc:
+            log.warning("enrich parse failed %s: %s", activity.signup_url, exc)
+            activity.enriched_at = utcnow()
             continue
 
         if data.get("excluded"):
-            act.excluded = True
-            act.enriched_at = utcnow()
-            log.info("excluded non-youth course (%s): %s",
-                     data.get("crumb", "?"), act.name[:60])
+            activity.excluded = True
+            activity.enriched_at = utcnow()
+            log.info(
+                "excluded non-youth course (%s): %s",
+                data.get("crumb", "?"),
+                activity.name[:60],
+            )
             continue
 
         for field in _FIELDS:
             value = data.get(field)
             if value in (None, ""):
                 continue
-            if field == "description" and len(value) <= len(act.description or ""):
-                continue  # never downgrade to a shorter description
-            setattr(act, field, value)
+            if field == "description" and len(value) <= len(activity.description or ""):
+                continue
+            setattr(activity, field, value)
 
         new_status = data.get("registration_status")
-        if new_status and new_status != act.registration_status:
-            event_type = ("reg_opened"
-                          if new_status == "open"
-                          and act.registration_status in ("not_yet_open", "unknown")
-                          else "status_change")
-            db.add(ActivityEvent(activity_id=act.id, event_type=event_type,
-                                 old_value=act.registration_status, new_value=new_status))
-            act.registration_status = new_status
+        if new_status and new_status != activity.registration_status:
+            event_type = (
+                "reg_opened"
+                if new_status == "open"
+                and activity.registration_status in ("not_yet_open", "unknown")
+                else "status_change"
+            )
+            db.add(ActivityEvent(
+                activity_id=activity.id,
+                event_type=event_type,
+                old_value=activity.registration_status,
+                new_value=new_status,
+            ))
+            activity.registration_status = new_status
 
-        act.enriched_at = utcnow()
+        activity.enriched_at = utcnow()
         done += 1
         if done % 50 == 0:
             db.commit()
-            log.info("enriched %d/%d for %s", done, len(acts), source.slug)
+            log.info("enriched %d/%d for %s", done, len(activities), source.slug)
         time.sleep(DELAY_S)
 
     db.commit()

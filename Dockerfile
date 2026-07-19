@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY app ./app
 COPY seed ./seed
+COPY scripts ./scripts
 
 ENV AT_DB_PATH=data/tracker.db
 VOLUME ["/srv/data"]

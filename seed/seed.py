@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 from app.database import Base, SessionLocal, engine, ensure_schema
-from app.models import Activity, ActivityEvent, Source
+from app.models import Activity, ActivityEvent, Source, utcnow
 
 TODAY = date.today()
 
@@ -578,7 +578,7 @@ def main(wipe: bool = False):
                 continue
             act = Activity(source_id=src.id, external_id=ext_id, **kwargs)
             # stagger first_seen so only a few show the "new today" badge
-            act.first_seen_at = datetime.utcnow() - timedelta(days=(0 if i % 9 == 0 else 3 + i % 5))
+            act.first_seen_at = utcnow() - timedelta(days=(0 if i % 9 == 0 else 3 + i % 5))
             db.add(act)
             db.flush()
             db.add(ActivityEvent(activity_id=act.id, event_type="first_seen",
