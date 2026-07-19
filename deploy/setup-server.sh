@@ -8,7 +8,7 @@ SRC_DIR=${1:-/tmp/activity-radar}
 
 echo "== packages =="
 sudo apt-get update -qq
-sudo apt-get install -y -qq python3-venv python3-pip apache2-utils
+sudo apt-get install -y -qq python3-venv python3-pip apache2-utils nginx rsync sqlite3 certbot python3-certbot-nginx
 
 echo "== app dir =="
 sudo mkdir -p "$APP_DIR"
@@ -51,6 +51,6 @@ echo
 echo "Done. Remaining manual steps:"
 echo "  1. DNS: add A record for the subdomain -> this server's IP (Gandi dashboard)"
 echo "  2. sudo htpasswd -c /etc/nginx/.htpasswd-activity-radar <user>   (if not done)"
-echo "  3. sudo certbot --nginx -d activities.bigbeefslottools.com       (HTTPS)"
+echo "  3. sudo certbot --nginx -d activityradar.in       (HTTPS)"
 echo "  4. edit $APP_DIR/.env for email/ntfy notifications, then:"
 echo "     sudo systemctl restart activity-radar"

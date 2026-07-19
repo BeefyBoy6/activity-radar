@@ -53,8 +53,9 @@ def send_ntfy(title: str, message: str, url: str = "") -> bool:
         headers = {"Title": title.encode("ascii", "ignore").decode()}
         if url:
             headers["Click"] = url
-        requests.post(f"https://ntfy.sh/{NTFY_TOPIC}",
-                      data=message.encode(), headers=headers, timeout=15)
+        response = requests.post(f"https://ntfy.sh/{NTFY_TOPIC}",
+                                 data=message.encode(), headers=headers, timeout=15)
+        response.raise_for_status()
         return True
     except Exception as e:
         log.error("ntfy send failed: %s", e)
@@ -73,6 +74,20 @@ def _fmt(act: Activity) -> str:
         bits.append(act.signup_url)
     return " · ".join(bits)
 
+
+
+def alert_new(db: Session, acts: list[Activity]):
+    settings = settings_store.get_all(db)
+    if not settings["notify_new"]:
+        return
+    acts = [a for a in acts if not _muted(db, a)]
+    for act in acts:
+        send_ntfy("New youth activity ✨", _fmt(act), act.signup_url)
+    if acts:
+        send_email(
+            f"[Activity Tracker] {len(acts)} new activit{'y' if len(acts) == 1 else 'ies'}",
+            "\n\n".join(_fmt(act) for act in acts[:50]),
+        )
 
 def alert_reg_opened(db: Session, acts: list[Activity]):
     s = settings_store.get_all(db)
@@ -104,6 +119,8 @@ def send_daily_digest(db: Session, new_acts: list[Activity], opened: list[Activi
     if not s["daily_digest"]:
         return
     new_acts = [a for a in new_acts if not _muted(db, a)]
+    opened = [a for a in opened if not _muted(db, a)]
+    soon = [a for a in soon if not _muted(db, a)]
     sections = []
     if opened:
         sections.append("REGISTRATION NOW OPEN\n" + "\n".join(f"  • {_fmt(a)}" for a in opened))

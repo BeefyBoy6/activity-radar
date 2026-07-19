@@ -15,14 +15,22 @@ from ..config import LLM_API_KEY, LLM_MODEL, LLM_PROVIDER
 
 log = logging.getLogger("llm_extract")
 
-PROMPT = """Extract youth activity/program listings from this webpage text from "{org}".
-Return ONLY a JSON array. Each element:
-{{"name": str, "description": str (1-2 sentences), "age_text": str, "price_text": str,
-"start_date": "YYYY-MM-DD" or "", "end_date": "YYYY-MM-DD" or "", "schedule_text": str,
-"registration_status": one of "not_yet_open","open","waitlist","closed","unknown",
-"registration_opens_at": "YYYY-MM-DD" or ""}}
-Only include actual registerable youth programs (camps, classes, lessons, leagues).
-Skip navigation, news, adult-only programs. Empty array if none found.
+PROMPT = """Extract real, individually registerable youth activities from this webpage text from "{org}".
+Return ONLY a JSON array. Each element must use:
+{{"name": str, "description": str (1-2 factual sentences), "age_text": str,
+"price_text": str, "start_date": "YYYY-MM-DD" or "", "end_date": "YYYY-MM-DD" or "",
+"schedule_text": str, "registration_status": one of
+"not_yet_open","open","waitlist","closed","unknown",
+"registration_opens_at": "YYYY-MM-DD" or "", "signup_url": str or ""}}
+
+Rules:
+- Include only a specific camp, class, lesson, league, clinic, club, workshop, or course.
+- Exclude landing pages, category names, navigation, calendars, news, memberships, rentals,
+  birthday parties, services, and adult/senior offerings.
+- Do not invent dates, ages, prices, status, descriptions, or URLs. Use empty strings when absent.
+- A generic heading such as "Youth Programs" or "Summer Camps" is not an activity.
+- Prefer the activity-specific URL from the RELEVANT LINKS section.
+- Return [] when the page does not contain specific registerable listings.
 
 PAGE TEXT:
 {text}"""
@@ -77,7 +85,14 @@ def _parse_json_array(raw: str) -> list[dict]:
         return []
     try:
         items = json.loads(raw[start:end + 1])
-        return [i for i in items if isinstance(i, dict) and i.get("name")]
+        if not isinstance(items, list):
+            return []
+        cleaned = []
+        for item in items[:150]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                continue
+            cleaned.append(item)
+        return cleaned
     except json.JSONDecodeError as e:
         log.warning("LLM JSON parse error: %s", e)
         return []
