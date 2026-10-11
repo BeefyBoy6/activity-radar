@@ -47,6 +47,13 @@ if [ ! -f /etc/nginx/.htpasswd-activity-radar ]; then
 fi
 sudo nginx -t && sudo systemctl reload nginx
 
+# The repo config is HTTP-only; certbot layers the HTTPS listener onto the live
+# copy. Copying the repo file above wipes that layer, so re-apply the existing
+# certificate on every deploy or the site silently drops to plain HTTP.
+if sudo test -d /etc/letsencrypt/live/activityradar.in; then
+  sudo certbot install --nginx --cert-name activityradar.in --redirect --non-interactive
+fi
+
 echo
 echo "Done. Remaining manual steps:"
 echo "  1. DNS: add A record for the subdomain -> this server's IP (Gandi dashboard)"
