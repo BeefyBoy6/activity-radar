@@ -57,9 +57,12 @@ They share nginx, so an nginx mistake for one site can affect the others.
 
 These were found while writing this handbook. Work them in order.
 
-### 1.1 Restore HTTPS (urgent: your password is currently sent unencrypted)
+### 1.1 Restore HTTPS ✅ done 2026-10-11
 
-**What's wrong.** As of 2026-10-11, `https://activityradar.in` serves the
+Resolved: HTTPS re-applied, the password rotated, and all three sites on the
+server verified. Kept for the record.
+
+**What was wrong.** As of 2026-10-11, `https://activityradar.in` serves the
 `jailroster.bigbeefslottools.com` certificate, so browsers refuse it. Plain
 `http://` works and does not redirect. Every login sends the basic-auth password
 in cleartext.
@@ -778,6 +781,16 @@ Ideas discussed in July 2026, in case Activity Radar grows beyond one family.
 - **Deploys overwrite the live nginx file.** Fixed by re-applying certbot in the
   setup script, but if you ever hand-edit nginx on the server, put the change in
   `deploy/nginx-activity-radar.conf` too, or the next deploy erases it.
+- **One broken nginx file blocks every site.** The server's sites share one
+  nginx. On 2026-10-11 the Lot Log file (`/etc/nginx/sites-available/lot-log`)
+  had a `sudo tee … << 'EOF'` command pasted into it, which made `nginx -t`
+  fail. That blocked certbot and reloads for all sites, and a reboot would have
+  taken all three offline. After editing any nginx file, run `sudo nginx -t`
+  before anything else. Never paste a command while a file is open in an
+  editor. Before rebooting, `sudo nginx -t` must pass.
+- **Terminal output pasted into a chat may show web addresses as
+  `[x](https://x)`.** That's the chat's formatting, not the file's contents.
+  Don't "fix" it on the server.
 - **Every deploy runs `seed.seed`.** Seed changes reach the server on each
   deploy, and only static fields refresh.
 - **Uncommitted files can vanish.** The first handbook was never committed and
@@ -809,4 +822,4 @@ Ideas discussed in July 2026, in case Activity Radar grows beyond one family.
 | 2026-07-11 | Deployed to the Gandi VPS; registered `activityradar.in`; HTTPS via Let's Encrypt; basic auth. |
 | 2026-07-11 | First handbook written (uncommitted; later lost). Repo created on GitHub. |
 | 2026-07-18 | External code audit, merged as PR #1 (`fix/scrape-quality`): quality gate, parser fixes, tests + CI, stale safety, run lock, nginx hardening. See AUDIT_REPORT.md. |
-| 2026-10-11 | This handbook. Found and fixed: HTTPS lost on deploy (setup script now re-applies the cert) and seed dates reset on each deploy (now only static fields refresh). |
+| 2026-10-11 | This handbook. Found and fixed: HTTPS lost on deploy (setup script now re-applies the cert) and seed dates reset on each deploy (now only static fields refresh). On the server: repaired the corrupted Lot Log nginx file that was blocking certbot, restored HTTPS, rotated the dashboard password. |
