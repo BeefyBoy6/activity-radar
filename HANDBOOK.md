@@ -494,7 +494,7 @@ certificate. **It never touches the server's database or `.env`.**
 ### 10.5 After every deploy (2-minute checklist)
 
 ```bash
-systemctl is-active activity-radar                     # → active
+systemctl status activity-radar | head -3             # → active (running) since <a moment ago>
 curl -sI https://activityradar.in | head -1            # → HTTP/1.1 401 Unauthorized
 curl -sI http://activityradar.in | grep -i location    # → redirects to https://
 journalctl -u activity-radar --since "5 min ago" | tail -20   # no tracebacks
@@ -791,6 +791,11 @@ Ideas discussed in July 2026, in case Activity Radar grows beyond one family.
 - **Terminal output pasted into a chat may show web addresses as
   `[x](https://x)`.** That's the chat's formatting, not the file's contents.
   Don't "fix" it on the server.
+- **Before 2026-10-11, deploys didn't restart the app.** `setup-server.sh`
+  used `systemctl enable --now`, which won't restart an already-running
+  service, so new code only took effect after a reboot. It now restarts
+  explicitly. To check after any deploy, `systemctl status activity-radar`
+  should show "active (running) since" a moment ago.
 - **Every deploy runs `seed.seed`.** Seed changes reach the server on each
   deploy, and only static fields refresh.
 - **Uncommitted files can vanish.** The first handbook was never committed and

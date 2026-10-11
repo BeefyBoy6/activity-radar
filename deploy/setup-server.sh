@@ -34,7 +34,8 @@ echo "== seed (no-op if already seeded) =="
 echo "== systemd =="
 sudo cp deploy/activity-radar.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now activity-radar
+sudo systemctl enable activity-radar
+sudo systemctl restart activity-radar   # enable --now won't restart a running service; new code needs a restart
 sleep 2
 systemctl --no-pager status activity-radar | head -5
 
