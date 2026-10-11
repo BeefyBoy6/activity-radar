@@ -573,8 +573,12 @@ def main(wipe: bool = False):
             ext_id = f"seed-{slug}-{i}"
             existing = db.query(Activity).filter_by(source_id=src.id, external_id=ext_id).one_or_none()
             if existing:
-                for k, v in kwargs.items():  # refresh seed data in place
-                    setattr(existing, k, v)
+                # Seed dates are relative to the day seed runs, and every deploy
+                # runs seed — refreshing them would invent new "opens tomorrow"
+                # urgency on each deploy. Only static facts are refreshed.
+                for k in ("name", "description", "category", "location", "signup_url"):
+                    if k in kwargs:
+                        setattr(existing, k, kwargs[k])
                 continue
             act = Activity(source_id=src.id, external_id=ext_id, **kwargs)
             # stagger first_seen so only a few show the "new today" badge
